@@ -1,5 +1,8 @@
 #!/bin/bash 
 
+# tdclient.shl
+# Script to list, send, or receive files from SAIG Portal
+# https://github.com/hencodes/ed_tools/blob/master/tdclient.shl
 #
 # Exit Codes:
 # 1 - Script called incorrectly
@@ -68,11 +71,6 @@ tdclient_classes_match() {
 
 ## Combines all downloaded files into a single .tap file
 tdclient_zip() {
-    if [ "${tdclient_filter}" = "*" ] || [ -z "${tdclient_year}" ]; then
-        echo "${tdclient_script} - Will not roll-up files with no filter and year" >&2
-        exit 4
-    fi 
-
     for tdclient_file in $(ls "${tdclient_load_dir}/tdclient-*-${tdclient_date}.dat"); do
         cat "${tdclient_file}" | grep "^[0-9]" >> \
             "${tdclient_load_dir}/td-${tdclient_filter}${tdclient_year}-${tdclient_date}.tap"
@@ -90,13 +88,18 @@ tdclient_send() {
     fi
     tdclient_check=FAIL
     for tdclient_file in $(find "${tdclient_send_dir}" -iname "${tdclient_filter}.dat" -mtime -1); do
-        tdclient_regex="*${tdclient_year}*"
-        if [[ $tdclient_file == $tdclient_regex ]] || [ -z "${tdclient_year}" ]; then
+        if [ -n "${tdclient_year}" ]; then
+            tdclient_regex="*${tdclient_year}*"
+        else
+            tdclient_regex="*"
+        fi
+
+        if [[ $tdclient_file == $tdclient_regex ]]; then
             "${tdclient_home}/tdclientc" "network=${tdclient_portal}" reset \
              "transfer=(name=$(basename "$tdclient_file") \
               senduserid=${tdclient_username} \
               send=$tdclient_file \
-              OTHER_COMP_PARMS='SECFILE=${tdclient_home}/secfile.txt')"
+              OTHER_COMP_PARMS=SECFILE='${tdclient_home}/secfile.txt')"
             if [ $? ]; then 
                 mv "$tdclient_file" "$tdclient_file.sent"
                 tdclient_check=WIN
@@ -196,7 +199,7 @@ while getopts ":f:y:z" opt; do
             tdclient_year="$OPTARG"
             ;;
         z)  
-            tdclient_rollup=YES
+            tdclient_zip=YES
             ;;
         :) 
             tdclient_help       
