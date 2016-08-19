@@ -36,14 +36,16 @@ tdclient_help() {
     exit 1  
 }
 
+## Receives last exit status, error message, and error code if failed
+tdclient_check_fail() {
+    [ $1 -ne 0 ] && (echo "${tdclient_script} - ${2}" >&2) && exit $3
+}
+
 ## Pulls down a list of all the available files from the portal
 tdclient_pull_avail() {
-    "${tdclient_home}/tdclientc" "network=${tdclient_portal}" reset "query_status=AVAILABLE" \
+    "${tdclient_home}/tdclientc" "network=${tdclient_portal}" reset query_status=AVAILABLE \
         query_list "query_file=${tdclient_temp_query}" &> /dev/null
-    if [ ! $? ]; then 
-       "${tdclient_script} - Error communicating with the portal" >&2 
-        exit 5
-    fi
+    tdclient_check_fail $? "Error communicating with the portal" 5
 }
 
 ## Extract a list of classes from the query file 
@@ -55,18 +57,16 @@ tdclient_classes() {
 tdclient_classes_match() {
     tdclient_check=FAIL
     for tdclient_class in $(tdclient_classes); do
+        # Should work even when filter is unset 
         if [[ $tdclient_class == ${tdclient_filter} ]]; then
             tdclient_regex="^.+${tdclient_year}[A-Z]{2}$"
-            if [[ $tdclient_class =~ $tdclient_regex ]] || [ -z "${tdclient_year}" ]; then
+            if [[ $tdclient_class =~ $tdclient_regex || -z ${tdclient_year} ]]; then
                 echo $tdclient_class    
                 tdclient_check=WIN
             fi
         fi
     done
-    if [ $tdclient_check = FAIL ]; then
-        echo "${tdclient_script} - No matching classes found on portal" >&2 
-        exit 6
-    fi
+    [ $tdclient_check = WIN ] || tdclient_check_fail $? "No matching classes found on portal" 6
 }
 
 ## Combines all downloaded files into a single .tap file
@@ -74,49 +74,36 @@ tdclient_zip() {
     for tdclient_file in $(ls "${tdclient_load_dir}/tdclient-*-${tdclient_date}.dat"); do
         cat "${tdclient_file}" | grep "^[0-9]" >> \
             "${tdclient_load_dir}/td-${tdclient_filter}${tdclient_year}-${tdclient_date}.tap"
-        if [ ! $? ]; then 
-            echo "$tdclient_script - Error rolling up files" >& 2
-            exit 4
-        fi
+        tdclient_check_fail $? "Error rolling up files" 4 
     done 
 }
 
 ## Submit files to the SAIG Portal
 tdclient_send() {
-    if [ "${tdclient_filter}" = "*" ]; then
-        tdclient_help
-    fi
+    # Not allowing send with wildcard. Way to dangerous!
+    [ "${tdclient_filter}" = "*" ] && tdclient_help
+
     tdclient_check=FAIL
     for tdclient_file in $(find "${tdclient_send_dir}" -iname "${tdclient_filter}.dat" -mtime -1); do
-        if [ -n "${tdclient_year}" ]; then
-            tdclient_regex="*${tdclient_year}*"
-        else
-            tdclient_regex="*"
-        fi
-
-        if [[ $tdclient_file == $tdclient_regex ]]; then
+        if [[ -z $tdclient_year || $tdclient_file =~ *$tdclient_year* ]]; then
             "${tdclient_home}/tdclientc" "network=${tdclient_portal}" reset \
              "transfer=(name=$(basename "$tdclient_file") \
               senduserid=${tdclient_username} \
               send=$tdclient_file \
-              OTHER_COMP_PARMS=SECFILE='${tdclient_home}/secfile.txt')"
-            if [ $? ]; then 
-                mv "$tdclient_file" "$tdclient_file.sent"
-                tdclient_check=WIN
-            else
-                echo "$tdclient_script - Error sending file" >& 2
-                exit 5 
-            fi
+              OTHER_COMP_PARMS='SECFILE=${tdclient_home}/secfile.txt')"
+
+            tdclient_check_fail $? "Error sending file" 5 
+            mv "$tdclient_file" "$tdclient_file.sent"
+            tdclient_check=WIN
         fi
     done
-    if [ $tdclient_check = FAIL ]; then
-        echo "$tdclient_script - Found no files to send" >&2
-        exit 6
-    fi
+
+    [ $tdclient_check = WIN ] || tdclient_check_fail $? "Found no files to send" 6
 }
 
 ## Download files from the portal
 tdclient_download() {
+    # Require that both the filter and the year be set
     if [ "${tdclient_filter}" = "*" ] || [ -z "${tdclient_year}" ]; then
         tdclient_help
     fi
@@ -126,24 +113,16 @@ tdclient_download() {
              "transfer=(name=${tdclient_class,,} \
               receiveclass=$tdclient_class \
               receive=${tdclient_load_dir}/tdclient-${tdclient_class,,}-$tdclient_date.dat)"
-        if [ ! $? ]; then
-            echo "$tdclient_script - Error receiving file" >&2
-            exit 5    
-        fi
+        tdclient_check_fail $? "Error receiving file" 5
     done
 
-    if [ -n $tdclient_zip ]; then
-        tdclient_zip
-    fi
+    [ -n $tdclient_zip ] && tdclient_zip
 }
 
 ## Check the permissions on the ini files 
 tdclient_permissions() {
     chmod u+rw ${tdclient_home}/*.ini >& /dev/null
-    if [ $? -ne 0 ]; then
-        echo "${tdclient_script} - Error setting ini file permissions" >&2 
-        exit 2 
-    fi
+    tdclient_check_fail $? "Error setting ini file permissions" 2
 }
 
 ## Make sure a valid year was passed
@@ -151,10 +130,7 @@ tdclient_check_year() {
     if [ -n "${tdclient_year}" ]; then
         tdclient_regex='^[0-9]{4}$'
         tdclient_years="$(echo "${tdclient_year} - 1" | bc)${tdclient_year}"
-        if [[ ! "${tdclient_years}" =~ $tdclient_regex ]]; then
-            echo "${tdclient_script} - Invalid aid year" >&2 
-            exit 3
-        fi
+        [[ "${tdclient_years}" =~ $tdclient_regex ]] || tdclient_check_fail $? "Invalid aid year" 3 
     fi
 }
 
@@ -166,12 +142,12 @@ tdclient_check_year() {
 ### tdclient_send_dir - Input directory for files to be sent
 ### tdclient_username - FTP Username (starts with TG) 
 
-# Set only if unset
-[ ! "$tdclient_home" ] && tdclient_home=/opt/tdclient
-[ ! "$tdclient_portal" ] && tdclient_portal=saigportal
-[ ! "$tdclient_tap_dir" ] && tdclient_tap_dir="$tdclient_home/out" 
-[ ! "$tdclient_send_dir" ] && tdclient_send_dir="$tdclient_home/in"
-[ ! "$tdclient_username" ] && tdclient_username=TGSETME
+# Set only if unset or empty
+[ -z "$tdclient_home" ] && tdclient_home=/opt/tdclient
+[ -z "$tdclient_portal" ] && tdclient_portal=saigportal
+[ -z "$tdclient_tap_dir" ] && tdclient_tap_dir="$tdclient_home/out" 
+[ -z "$tdclient_send_dir" ] && tdclient_send_dir="$tdclient_home/in"
+[ -z "$tdclient_username" ] && tdclient_username=TGSETME
 
 ## Exports (keep these small)
 LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$tdclient_home
@@ -183,11 +159,8 @@ tdclient_script="$(basename $0)"
 tdclient_temp_query="/tmp/${tdclient_script%.*}-query-${tdclient_date}.log"
 
 ## Process parameters
-if [ -z $1 ]; then
-    tdclient_help
-else
-    tdclient_command="${1^^}"
-fi
+[ -z "${1}" ] && tdclient_help 
+tdclient_command="${1^^}"
 shift
 
 while getopts ":f:y:z" opt; do
@@ -242,6 +215,5 @@ esac
 # Tear-Down for Main Script
 tdclient_permissions
 
-if [ -e "${tdclient_temp_query}" ]; then
-    rm "${tdclient_temp_query}"
-fi
+[ -e "${tdclient_temp_query}" ] && rm "${tdclient_temp_query}"
+exit 0
